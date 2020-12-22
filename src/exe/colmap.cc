@@ -2156,7 +2156,9 @@ int RunReprojErrorCalculator(int argc, char** argv) {
     double sq_sum = std::inner_product(diff.begin(), diff.end(), diff.begin(), 0.0);
     double stdev = std::sqrt(sq_sum / v.size());
 
-    std::cout << camera_id << " " << mean << " " << stdev << std::endl;
+    std::cout << "Camera " << camera_id << 
+        " - mean: " << mean << 
+        " , stdev: " << stdev << std::endl;
   }
 
   return 0;
