@@ -2087,6 +2087,81 @@ int RunVocabTreeRetriever(int argc, char** argv) {
   return EXIT_SUCCESS;
 }
 
+int RunReprojErrorCalculator(int argc, char** argv) {
+  std::string input_path;
+  std::string output_path;
+
+  OptionManager options;
+  options.AddDatabaseOptions();
+  options.AddRequiredOption("input_path", &input_path);
+  options.AddMapperOptions();
+  options.Parse(argc, argv);
+
+  if (!ExistsDir(input_path)) {
+    std::cerr << "ERROR: `input_path` is not a directory" << std::endl;
+    return EXIT_FAILURE;
+  }
+
+  PrintHeading1("Loading database");
+
+  DatabaseCache database_cache;
+
+  {
+    Database database(*options.database_path);
+    Timer timer;
+    timer.Start();
+    const size_t min_num_matches =
+        static_cast<size_t>(options.mapper->min_num_matches);
+    database_cache.Load(database, min_num_matches,
+                        options.mapper->ignore_watermarks,
+                        options.mapper->image_names);
+    std::cout << std::endl;
+    timer.PrintMinutes();
+  }
+
+  std::cout << std::endl;
+
+  Reconstruction reconstruction;
+  reconstruction.Read(input_path);
+
+  std::unordered_map<camera_t, std::vector<double>> camera_to_errors;
+  for (const auto& p : reconstruction.Points3D()) {
+    const auto& point3D = p.second;
+
+    for (const auto& track_el : point3D.Track().Elements()) {
+      const auto& image = reconstruction.Image(track_el.image_id);
+      const auto& camera = reconstruction.Camera(image.CameraId());
+      const auto& point2D = image.Point2D(track_el.point2D_idx);
+      const double squared_reproj_error = CalculateSquaredReprojectionError(
+          point2D.XY(), point3D.XYZ(), image.Qvec(), image.Tvec(), camera);
+      // All camera ids are greater than 0.
+      // Thus, push reprojection errors from all cameras to id 0 vector.
+      camera_to_errors[0].push_back(std::sqrt(squared_reproj_error));
+      camera_to_errors[camera.CameraId()].push_back(std::sqrt(squared_reproj_error));
+    }
+  }
+  
+  // Id 0 vector: Has all errors aggregated.
+  // Other vectors with id greater than 0: Has errors that corresponds to camera of the id.
+  for (const auto& p : camera_to_errors) {
+    auto camera_id = p.first;
+    const auto& v = p.second;
+    double sum = std::accumulate(v.begin(), v.end(), 0.0);
+    double mean = sum / v.size();
+
+    std::vector<double> diff(v.size());
+    std::transform(v.begin(), v.end(), diff.begin(), [mean](double x) { 
+      return x - mean; 
+    });
+    double sq_sum = std::inner_product(diff.begin(), diff.end(), diff.begin(), 0.0);
+    double stdev = std::sqrt(sq_sum / v.size());
+
+    std::cout << camera_id << " " << mean << " " << stdev << std::endl;
+  }
+
+  return 0;
+}
+
 typedef std::function<int(int, char**)> command_func_t;
 
 int ShowHelp(
@@ -2175,6 +2250,7 @@ int main(int argc, char** argv) {
   commands.emplace_back("vocab_tree_builder", &RunVocabTreeBuilder);
   commands.emplace_back("vocab_tree_matcher", &RunVocabTreeMatcher);
   commands.emplace_back("vocab_tree_retriever", &RunVocabTreeRetriever);
+  commands.emplace_back("reproj_error_calculator", &RunReprojErrorCalculator);
 
   if (argc == 1) {
     return ShowHelp(commands);
